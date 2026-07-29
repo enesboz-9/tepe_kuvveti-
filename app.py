@@ -22,6 +22,8 @@ import streamlit as st
 
 import re
 import math
+import os
+import tempfile
 from dataclasses import dataclass, field
 
 try:
@@ -41,9 +43,28 @@ NUMBER_ONLY_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 # --------------------------------------------------------------------------
 
 def load_dxf(file_bytes):
-    stream = io.StringIO(file_bytes.read().decode("utf-8", errors="ignore"))
-    doc = ezdxf.read(stream)
-    return doc
+    """Yüklenen dosyayı geçici bir dosyaya yazıp ezdxf.readfile() ile okur.
+    Bu yöntem hem ASCII hem de BINARY DXF dosyalarını, ve dosyanın kendi
+    içindeki (Türkçe karakterler için) codepage bilgisini doğru şekilde
+    algılayarak okur -- doğrudan UTF-8 metin olarak okumaya çalışmak
+    binary DXF'lerde veya farklı codepage'lerde hataya yol açar."""
+    raw = file_bytes.read()
+    with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        try:
+            doc = ezdxf.readfile(tmp_path)
+        except ezdxf.DXFStructureError:
+            # bazı dosyalar bozuk/eksik yapıya sahip olabilir; recover modülüyle dene
+            from ezdxf import recover
+            doc, auditor = recover.readfile(tmp_path)
+        return doc
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def get_entity_color_layer(entity):
