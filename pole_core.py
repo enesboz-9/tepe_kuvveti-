@@ -51,9 +51,37 @@ POLE_TYPE_RE = re.compile(r"^[A-Za-z0-9]+-[A-Za-z0-9()'\"]+$")
 # Çizimlerde kablo hattı etiketi olarak kullanılan harf kodları. Örn: "3xR"
 # -> 3 iletkenli Rose tipi kablo, "SW" -> Swallow tipi kablo (1 iletken).
 CABLE_LETTER_CODE_MAP = {
+    # -- AG (alçak gerilim) alüminyum örgülü iletkenler: çiçek isimleri --
     "R": "Rose",
+    "ROSE": "Rose",
     "P": "Pansy",
+    "PANSY": "Pansy",
+    "LILY": "Lily",
+    "ASTER": "Aster",
+    "PHLOX": "Phlox",
+    "OXLIP": "Oxlip",
+    "POPPY": "Poppy",
+    "IRIS": "Iris",
+    "PAPPY": "Pappy",
+    # -- OG (orta gerilim) çelik özlü alüminyum (ACSR) iletkenler: kuş isimleri --
     "SW": "Swallow",
+    "SWALLOW": "Swallow",
+    "SPARROW": "Sparrow",
+    "RAVEN": "Raven",
+    "PIGEON": "Pigeon",
+    "PARTRIDGE": "Partridge",
+    "OSTRICH": "Ostrich",
+    "HAWK": "Hawk",
+    "DRAKE": "Drake",
+    "CONDOR": "Condor",
+    "RAIL": "Rail",
+    "CARDINAL": "Cardinal",
+    "PHEASANT": "Pheasant",
+    "LINNET": "Linnet",
+    "ORIOLE": "Oriole",
+    "FLICKER": "Flicker",
+    "TERN": "Tern",
+    # -- Hava hattı kablosu (AER) --
     "AER": "Alpek",
 }
 
@@ -207,7 +235,7 @@ def extract_polylines(doc, layers):
     segments = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
         layer, _ = get_entity_color_layer(e)
-        if layers and layer not in layers:
+        if layers is not None and layer not in layers:
             continue
         try:
             points = [tuple(p[:2]) for p in e.get_points(format="xy")]
@@ -225,7 +253,7 @@ def extract_polylines(doc, layers):
             })
     for e in msp.query("LINE"):
         layer, _ = get_entity_color_layer(e)
-        if layers and layer not in layers:
+        if layers is not None and layer not in layers:
             continue
         try:
             p1 = (e.dxf.start.x, e.dxf.start.y)
@@ -246,7 +274,7 @@ def extract_texts(doc, layers):
     texts = []
     for e in msp.query("TEXT MTEXT"):
         layer, _ = get_entity_color_layer(e)
-        if layers and layer not in layers:
+        if layers is not None and layer not in layers:
             continue
         try:
             if e.dxftype() == "MTEXT":
@@ -465,11 +493,19 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
     return list(poles.values())
 
 
-def compute_resultant_force(pole, tension_lookup):
+def compute_resultant_force(pole, tension_lookup, load_factor_lookup=None):
     """Direğe bağlı her hat için, hattın tam gerilim kuvvetini (tekil iletken
     çekme kuvveti x iletken sayısı) direk merkezinden hattın gittiği yöne
     doğru bir vektör olarak alır ve tüm hatların vektörel toplamının
-    büyüklüğünü döndürür (basitleştirilmiş model)."""
+    büyüklüğünü döndürür (basitleştirilmiş model).
+
+    load_factor_lookup: {kablo_spec: katsayı} -- her kablo tipi için TEDAŞ
+    şartnamesindeki rüzgar/buz yükünü kabaca yansıtmak amacıyla, tekil
+    iletken çekme kuvvetine uygulanan çarpan (varsayılan 1.0, yani etkisiz).
+    Bu hâlâ basitleştirilmiş bir yaklaşımdır (gerçek rüzgar/buz yükü hesabı
+    iletken çapı, buz kalınlığı ve açıklık uzunluğuna bağlı ayrı bir
+    mühendislik hesabıdır); sonuçlar mühendis tarafından doğrulanmalıdır."""
+    load_factor_lookup = load_factor_lookup or {}
     fx, fy = 0.0, 0.0
     details = []
     for seg in pole.segments:
@@ -480,7 +516,8 @@ def compute_resultant_force(pole, tension_lookup):
             continue
         ux, uy = dx / length, dy / length
         unit_tension = tension_lookup.get(seg.cable_spec, 0.0)
-        total_tension = unit_tension * seg.conductor_count
+        load_factor = load_factor_lookup.get(seg.cable_spec, 1.0)
+        total_tension = unit_tension * seg.conductor_count * load_factor
         fx += ux * total_tension
         fy += uy * total_tension
         details.append((seg.cable_spec, seg.conductor_count, total_tension))
