@@ -7,9 +7,9 @@ pip install -r requirements.txt
 
 ## Çalıştırma
 ```
-streamlit run pole_force_app.py
+streamlit run app.py
 ```
-`pole_core.py` dosyasının `pole_force_app.py` ile **aynı klasörde** olması gerekir.
+`pole_core.py` dosyasının `app.py` ile **aynı klasörde** (repo kökünde) olması gerekir. Streamlit Cloud'da "Main file path" ayarının `app.py` olduğundan emin olun.
 
 ## Kullanım Adımları
 1. AutoCAD projesini **DXF** formatında dışa aktarıp yükleyin (DWG değil).
