@@ -32,6 +32,7 @@ from pole_core import (
     list_layers,
     build_poles,
     compute_resultant_force,
+    compute_angle_between_segments,
     recommend_pole_type,
     parse_conductor_count,
     parse_pole_equipment_tag,
@@ -284,6 +285,7 @@ if calc_clicked:
         force, _details = compute_resultant_force(p, tension_lookup, load_factor_lookup)
         rec_type, rec_capacity = recommend_pole_type(force, capacity_lookup, safety_factor)
         current_type = current_type_lookup.get(p.pole_id, "Bilinmiyor")
+        angle = compute_angle_between_segments(p)
 
         if current_type == "Bilinmiyor":
             needs_change = "Mevcut tip bilinmiyor"
@@ -310,6 +312,7 @@ if calc_clicked:
             "Y": round(p.coord[1], 2),
             "Bağlı Hat Sayısı": len(p.segments),
             "Kablo Tipleri": kablo_tipleri_yorumlu,
+            "Hatlar Arası Açı (°)": round(angle, 1) if angle is not None else "",
             "Hesaplanan Tepe Kuvveti (kgf)": round(force, 1),
             "Gerekli Kapasite (Güvenlik Katsayılı, kgf)": round(force * safety_factor, 1),
             "Mevcut Direk Tipi": current_type,
