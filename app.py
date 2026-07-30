@@ -125,12 +125,14 @@ with c1:
     )
 with c2:
     name_match_dist = st.number_input(
-        "Direk adı/tipi metni eşleştirme mesafesi (çizim birimi)",
+        "Direk tipi metni eşleştirme mesafesi (çizim birimi)",
         min_value=0.01, value=6.0, step=0.5,
-        help="Direk merkezine bu mesafeden yakın 'A01' tarzı direk adı ve "
-             "'G-12I' tarzı direk tipi metinleri o direğe atanır. Paftanızın "
-             "ölçek biriminize göre ayarlayın (UTM/metre tabanlı paftalarda "
-             "5-8 birim genelde yeterlidir)."
+        help="'G-12I', 'G-K1' tarzı direk tipi metinleri, o direğe bağlı "
+             "hatların üzerine/yakınına (direğe yakın kısımda) yazılır. "
+             "Bu değer, bir metnin bu hatlara olan dik mesafesi için eşiktir "
+             "(bulunamazsa direğin kendi koordinatına olan mesafe de yedek "
+             "olarak denenir). Paftanızın ölçek birimine göre ayarlayın "
+             "(UTM/metre tabanlı paftalarda 5-8 birim genelde yeterlidir)."
     )
 
 parse_clicked = st.button("📐 Direkleri Tespit Et", type="primary")
@@ -166,9 +168,10 @@ found_specs = sorted({seg.cable_spec for p in poles for seg in p.segments})
 
 st.subheader("3) Direk Bilgilerini Gözden Geçirin")
 st.write(
-    "Otomatik tespit edilen direkler aşağıdadır. İsimleri hatalıysa düzeltin, "
-    "ve varsa mevcut direk tipini (biliniyorsa) seçin — bu, hangi direklerin "
-    "**değiştirilmesi gerektiğinin** belirlenmesi için kullanılır."
+    "Otomatik tespit edilen direkler aşağıdadır. Direk tipi (paftadan) "
+    "hatalıysa/boşsa düzeltin, ve varsa mevcut direk tipini (biliniyorsa) "
+    "seçin — bu, hangi direklerin **değiştirilmesi gerektiğinin** "
+    "belirlenmesi için kullanılır."
 )
 
 pole_rows = []
@@ -176,7 +179,6 @@ for p in poles:
     specs_here = sorted({s.cable_spec for s in p.segments})
     pole_rows.append({
         "Direk ID": p.pole_id,
-        "Direk Adı": p.detected_id if p.detected_id else p.pole_id,
         "Direk Tipi (Paftadan)": p.detected_type,
         "X": round(p.coord[0], 2),
         "Y": round(p.coord[1], 2),
@@ -190,7 +192,7 @@ edited_poles = st.data_editor(
     pole_edit_df,
     use_container_width=True,
     hide_index=True,
-    disabled=["Direk ID", "Direk Tipi (Paftadan)", "X", "Y", "Bağlı Hat Sayısı", "Kablo Tipleri"],
+    disabled=["Direk ID", "X", "Y", "Bağlı Hat Sayısı", "Kablo Tipleri"],
     column_config={
         "Mevcut Direk Tipi": st.column_config.SelectboxColumn(
             options=["Bilinmiyor"] + POLE_TYPES_DEFAULT
@@ -266,7 +268,6 @@ if calc_clicked:
     current_type_lookup = dict(zip(
         edited_poles["Direk ID"], edited_poles["Mevcut Direk Tipi"]
     ))
-    name_lookup = dict(zip(edited_poles["Direk ID"], edited_poles["Direk Adı"]))
     type_text_lookup = dict(zip(
         edited_poles["Direk ID"], edited_poles["Direk Tipi (Paftadan)"]
     ))
@@ -295,7 +296,6 @@ if calc_clicked:
             else:
                 needs_change = "Evet"
 
-        direk_adi = name_lookup.get(p.pole_id, p.pole_id)
         direk_tipi_metni = type_text_lookup.get(p.pole_id, "")
         etiket_yorumu = parse_pole_equipment_tag(direk_tipi_metni) or ""
         kablo_tipleri_yorumlu = ", ".join(
@@ -304,7 +304,6 @@ if calc_clicked:
 
         result_rows.append({
             "Direk ID": p.pole_id,
-            "Direk Adı": direk_adi,
             "Direk Tipi (Paftadan)": direk_tipi_metni,
             "Direk Etiketi Yorumu": etiket_yorumu,
             "X": round(p.coord[0], 2),
@@ -333,7 +332,7 @@ if "result_df" in st.session_state:
     st.markdown(f"**Değiştirilmesi gereken direk sayısı: {len(change_df)}**")
     if len(change_df) > 0:
         st.dataframe(
-            change_df[["Direk ID", "Direk Adı", "Mevcut Direk Tipi",
+            change_df[["Direk ID", "Direk Tipi (Paftadan)", "Mevcut Direk Tipi",
                        "Önerilen Direk Tipi", "Hesaplanan Tepe Kuvveti (kgf)"]],
             use_container_width=True, hide_index=True
         )
@@ -342,7 +341,7 @@ if "result_df" in st.session_state:
     params_rows = [
         {"Parametre": "Güvenlik Katsayısı", "Değer": safety_factor},
         {"Parametre": "Direk Birleştirme Mesafesi", "Değer": merge_tolerance},
-        {"Parametre": "Direk Adı Eşleştirme Mesafesi", "Değer": name_match_dist},
+        {"Parametre": "Direk Tipi Metni Eşleştirme Mesafesi", "Değer": name_match_dist},
     ]
     params_df = pd.DataFrame(params_rows)
 
