@@ -148,14 +148,63 @@ def parse_cable_letter_code(text):
     return parse_cable_composition(text)
 
 
+# "3x35/16+50_AER" gibi -- <faz sayısı>x<faz kesiti(mm²)>/<taşıyıcı kesiti(mm²)>
+# +<nötr kesiti(mm²)>_AER. Bu havai hat kablosu (AER) ailesinde taşıyıcı
+# (mesajer) Alpek teli genelde sabit 16 mm²'dir; TEDAŞ kataloğunda tipik
+# kombinasyonlar: 16/16+25, 25/16+35, 35/16+50, 50/16+70, 70/16+95.
+AER_SPEC_RE = re.compile(
+    r"^\s*(\d+)\s*[xX]\s*(\d+)\s*/\s*(\d+)\s*\+\s*(\d+)\s*_?\s*AER\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_aer_composition(text):
+    """AER (askı telli, Alpek örgülü alüminyum) hava hattı kablosu etiketini
+    çözer. Örn: "3x35/16+50_AER" ->
+      - phase_count = 3           (faz iletkeni sayısı)
+      - phase_section_mm2 = 35    (her faz iletkeninin Alpek kesiti, mm²)
+      - messenger_section_mm2 = 16 (taşıyıcı/mesajer Alpek telinin kesiti, mm²)
+      - neutral_section_mm2 = 50  (nötr iletkenin kesiti, mm²)
+
+    Eşleşirse yukarıdaki alanları içeren bir sözlük döner, aksi halde None."""
+    t = text.strip()
+    m = AER_SPEC_RE.match(t)
+    if not m:
+        return None
+    return {
+        "phase_count": int(m.group(1)),
+        "phase_section_mm2": int(m.group(2)),
+        "messenger_section_mm2": int(m.group(3)),
+        "neutral_section_mm2": int(m.group(4)),
+    }
+
+
+def format_aer_label(text):
+    """parse_aer_composition() sonucunu okunabilir bir açıklamaya çevirir.
+    Eşleşmezse None döner."""
+    parsed = parse_aer_composition(text)
+    if not parsed:
+        return None
+    return (
+        f"{parsed['phase_count']}x {parsed['phase_section_mm2']} mm² Alpek faz "
+        f"+ {parsed['messenger_section_mm2']} mm² Alpek taşıyıcı "
+        f"+ {parsed['neutral_section_mm2']} mm² nötr (AER)"
+    )
+
+
 def format_cable_label(text):
     """Bir kablo etiketini (mümkünse) okunabilir hale çevirir.
     Örn: "3xR" -> "3xR (3x Rose)", "(5xR)" -> "(5xR) (5x Rose)",
-    "4P+R" -> "4P+R (4x Pansy + 1x Rose)". Tanınmıyorsa metni olduğu gibi döndürür."""
+    "4P+R" -> "4P+R (4x Pansy + 1x Rose)",
+    "3x35/16+50_AER" -> "3x35/16+50_AER (3x 35 mm² Alpek faz + 16 mm² Alpek
+    taşıyıcı + 50 mm² nötr (AER))". Tanınmıyorsa metni olduğu gibi döndürür."""
     parsed = parse_cable_composition(text)
     if parsed:
         _total, desc = parsed
         return f"{text.strip()} ({desc})"
+    aer_desc = format_aer_label(text)
+    if aer_desc:
+        return f"{text.strip()} ({aer_desc})"
     return text
 
 
@@ -554,6 +603,33 @@ def compute_resultant_force(pole, tension_lookup, load_factor_lookup=None):
         details.append((seg.cable_spec, seg.conductor_count, total_tension))
     magnitude = math.hypot(fx, fy)
     return magnitude, details
+
+
+def compute_angle_between_segments(pole):
+    """İki hatlı (dönüş noktası) bir direk için, direğe bağlı iki hattın
+    birbirine göre açısını (derece, 0-180 arası) hesaplar. Örn. AutoCAD'de
+    ölçülen 128° gibi bir "kırılma açısı" -- hatlar ne kadar düz bir çizgiye
+    yakınsa (180°'ye yakın) direğe etki eden bileşke kuvvet o kadar küçük,
+    hatlar ne kadar keskin kırılıyorsa (küçük açı) bileşke o kadar büyük olur.
+
+    Bu açı zaten compute_resultant_force() içindeki vektörel toplama dahildir;
+    burada sadece görsel/rapor amaçlı doğrulama için (kullanıcının CAD'den
+    ölçtüğü açıyla karşılaştırabilmesi için) ayrıca hesaplanıp döndürülür.
+
+    Direğin tam olarak 2 hattı yoksa (uç direk: 1 hat, T/köşe direği: 3+ hat)
+    None döner."""
+    if len(pole.segments) != 2:
+        return None
+    s1, s2 = pole.segments
+    v1 = (s1.other_point[0] - pole.coord[0], s1.other_point[1] - pole.coord[1])
+    v2 = (s2.other_point[0] - pole.coord[0], s2.other_point[1] - pole.coord[1])
+    len1 = math.hypot(*v1)
+    len2 = math.hypot(*v2)
+    if len1 == 0 or len2 == 0:
+        return None
+    cos_angle = (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2)
+    cos_angle = max(-1.0, min(1.0, cos_angle))  # kayan nokta taşmalarına karşı
+    return math.degrees(math.acos(cos_angle))
 
 
 def recommend_pole_type(force, capacity_table, safety_factor):
