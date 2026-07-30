@@ -22,6 +22,19 @@ streamlit run pole_force_app.py
 6. "Hesapla ve Excel Raporu Oluştur" ile sonuçları görüntüleyin ve
    Excel raporunu indirin.
 
+## Kablo / Direk Etiketi Kısaltmaları
+Çizimlerdeki bazı kısaltmalar otomatik olarak tanınır ve Excel raporunda
+"Direk Etiketi Yorumu" ile kablo tipi sütunlarında okunabilir hale getirilir:
+
+- **Kablo harf kodları:** `R` = Rose, `P` = Pansy, `SW` = Swallow,
+  `AER` = Alpek. Örn. `3xR` → 3x Rose kablo.
+- **İzolatör/donanım etiketleri:** `<sayı><harf>+<sayı><harf>` deseni,
+  örn. `4P+R` → 4x Pansy + 1x Rose izolatör.
+- **Bilinen direk tipi kodları:** `GK1` → Müşterek (Uzun) K1 Tipi Direk.
+
+Bu eşleştirmeler `pole_core.py` içindeki `CABLE_LETTER_CODE_MAP` ve
+`POLE_TAG_CODE_MAP` sözlüklerinden genişletilebilir.
+
 ## Önemli Not
 Kuvvet hesabı, direğe bağlı her hattın çekme kuvvetini vektörel olarak
 toplayan basitleştirilmiş bir modeldir. Rüzgar/buz yükü ve sıcaklık gibi
