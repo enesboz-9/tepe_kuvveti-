@@ -45,6 +45,15 @@ NUMBER_ONLY_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 # hatların üzerinde/yakınında yer alıyor (bkz. build_poles()).
 POLE_TYPE_RE = re.compile(r"^[A-Za-z0-9]+-[A-Za-z0-9()'\"]+$")
 
+# Direk ADI: "B04", "B07", "A01", "T25" gibi -- tire İÇERMEYEN, bir ya da
+# birkaç harfle başlayıp rakamla devam eden kısa etiketler. Ekran
+# görüntüsündeki örnekte direğin tam üzerine/yakınına yazılır (B03, B04,
+# B05, B07). Direk TİPİ etiketlerinden (örn. "G-12I") farkı: tire
+# içermemesi. NOT: POLE_TAG_CODE_MAP içindeki bilinen kodlar (örn. "GK1")
+# bu regex'e uysa da classify_text() içinde önce o sözlükle eşleştirilir,
+# bu yüzden buraya düşmezler.
+POLE_NAME_RE = re.compile(r"^[A-Za-zÇĞİÖŞÜçğıöşü]{1,4}\d{1,4}$")
+
 # --------------------------------------------------------------------------
 # Kablo / direk etiketi kısaltma sözlükleri
 # --------------------------------------------------------------------------
@@ -377,8 +386,12 @@ def classify_text(txt):
         return "cable_spec"
     if parse_cable_composition(t) is not None:
         return "cable_spec"
+    if t.upper() in POLE_TAG_CODE_MAP:
+        return "pole_type"
     if POLE_TYPE_RE.match(t):
         return "pole_type"
+    if POLE_NAME_RE.match(t):
+        return "pole_name"
     return "ignore"
 
 
@@ -431,6 +444,7 @@ class PoleSegmentRef:
     other_point: tuple
     cable_spec: str
     conductor_count: int
+    span_length: float = None  # menzil (m), paftadan okunan hat açıklığı (örn. 25.0)
 
 
 @dataclass
@@ -438,13 +452,8 @@ class Pole:
     pole_id: str
     coord: tuple
     detected_type: str = ""    # paftadaki direk tipi etiketi, örn. "G-12I(P)"
+    detected_name: str = ""    # paftadaki direk adı, örn. "B04", "B07"
     segments: list = field(default_factory=list)  # PoleSegmentRef
-
-    @property
-    def detected_name(self):
-        """Geriye dönük uyumluluk: eski kod detected_name kullanıyorsa
-        direk tipini döndürür (direk adı artık ayrıca tespit edilmiyor)."""
-        return self.detected_type
 
 
 def point_segment_distance(p, a, b):
@@ -522,6 +531,8 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
     # (antet/başlık yazıları vb.) hiçbir eşleştirmeye dahil edilmez.
     spec_texts = [t for t in texts if classify_text(t["text"]) == "cable_spec"]
     type_texts = [t for t in texts if classify_text(t["text"]) == "pole_type"]
+    name_texts = [t for t in texts if classify_text(t["text"]) == "pole_name"]
+    span_texts = [t for t in texts if classify_text(t["text"]) == "span_length"]
 
     # 2) her segmente en yakın kablo tipi metnini ata -- çizgiye olan dik
     # mesafeye göre (sadece orta noktaya değil, çizginin tamamına göre)
@@ -536,6 +547,16 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
         cable_spec = best if best else "Bilinmeyen Kablo Tipi"
         cc = parse_conductor_count(cable_spec)
 
+        # menzil (span) uzunluğu: aynı segmente en yakın sayısal-tek metin
+        span_best = None
+        span_best_d = None
+        for t in span_texts:
+            d = point_segment_distance(t["pos"], s["p1"], s["p2"])
+            if d <= spec_match_dist * 6 and (span_best_d is None or d < span_best_d):
+                span_best = t["text"]
+                span_best_d = d
+        span_length = float(span_best) if span_best else None
+
         idx1 = 2 * si
         idx2 = 2 * si + 1
         c1 = point_to_cluster[idx1]
@@ -543,10 +564,12 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
 
         poles[c1].segments.append(PoleSegmentRef(other_point=s["p2"],
                                                    cable_spec=cable_spec,
-                                                   conductor_count=cc))
+                                                   conductor_count=cc,
+                                                   span_length=span_length))
         poles[c2].segments.append(PoleSegmentRef(other_point=s["p1"],
                                                    cable_spec=cable_spec,
-                                                   conductor_count=cc))
+                                                   conductor_count=cc,
+                                                   span_length=span_length))
 
     # 3) her direğe direk TİPİ metnini ata (örn. "G-K1", "G-12I"). Bu
     # etiketler direğin kendi koordinatında değil, o direğe bağlı hatların
@@ -569,6 +592,19 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
             if d_point <= name_match_dist and (best_type_d is None or d_point < best_type_d):
                 best_type, best_type_d = t["text"], d_point
         p.detected_type = best_type if best_type else ""
+
+    # 4) her direğe direk ADINI ata (örn. "B04", "B07"). Bu etiketler
+    # çizimde direğin tam koordinatının üzerine/hemen yakınına yazılır
+    # (bir hattın üzerine değil) -- bu yüzden doğrudan direk koordinatına
+    # olan mesafeye bakılır, direk tipi eşleştirmesindeki gibi hat üzerinden
+    # değil.
+    for p in poles.values():
+        best_name, best_name_d = None, None
+        for t in name_texts:
+            d = dist(p.coord, t["pos"])
+            if d <= name_match_dist and (best_name_d is None or d < best_name_d):
+                best_name, best_name_d = t["text"], d
+        p.detected_name = best_name if best_name else ""
 
     return list(poles.values())
 
@@ -630,6 +666,57 @@ def compute_angle_between_segments(pole):
     cos_angle = (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2)
     cos_angle = max(-1.0, min(1.0, cos_angle))  # kayan nokta taşmalarına karşı
     return math.degrees(math.acos(cos_angle))
+
+
+def compute_deviation_angle(pole):
+    """Sapma açısı β = 180° - α, burada α compute_angle_between_segments()
+    tarafından hesaplanan kırılma/iç açıdır (örn. görseldeki α=128° için
+    β=52°). Direğin tam olarak 2 hattı yoksa (veya α hesaplanamıyorsa)
+    None döner."""
+    alpha = compute_angle_between_segments(pole)
+    if alpha is None:
+        return None
+    return 180.0 - alpha
+
+
+# Direk tipi metnini (paftadan okunan, örn. "G-12I", "G-K1(P)", "9-O")
+# varsayılan kapasite kategorilerinden (POLE_TYPES_DEFAULT) birine kabaca
+# eşlemek için kullanılan anahtar kelimeler. Sıra önemlidir: daha spesifik
+# olanlar (12I, 10I) önce, "K" ve "9/Ağaç" daha genel olarak sonra kontrol
+# edilir.
+def normalize_pole_type_text(text):
+    """Paftadan tespit edilen direk tipi etiketini (örn. "G-12I") 9 Ağaç /
+    10I / 12I / K Tipi kategorilerinden birine eşler. Bu sadece "Mevcut
+    Direk Tipi" alanı için otomatik bir ön-öneri sağlar -- kullanıcı
+    arayüzde her zaman elle düzeltebilir. Eşleşme bulunamazsa None döner."""
+    if not text:
+        return None
+    t = text.upper()
+    if "12I" in t:
+        return "12I"
+    if "10I" in t:
+        return "10I"
+    if re.search(r"K\d", t) or "K TİPİ" in t or "KTIPI" in t or "KTİPİ" in t:
+        return "K Tipi"
+    if "9" in t or "AĞAÇ" in t or "AGAC" in t:
+        return "9 Ağaç"
+    return None
+
+
+def compute_total_force_with_wind(resultant_force, wind_force):
+    """Rüzgar yükünü (P_w), hat gerilmelerinin bileşke tepe kuvvetine
+    (P_R, compute_resultant_force() çıktısı) dik bir bileşen olarak ekler:
+
+        P_toplam = sqrt(P_R^2 + P_w^2)
+
+    wind_force None, 0 veya negatifse rüzgar etkisi yok sayılır ve doğrudan
+    resultant_force döndürülür. P_w, iletken çapı/buz kalınlığı/direk
+    gövdesi rüzgar basıncından TEDAŞ şartnamesine göre ayrıca hesaplanıp
+    burada girdi olarak verilmelidir -- bu fonksiyon o hesabı yapmaz,
+    sadece iki bileşeni vektörel olarak (dik kabul ederek) birleştirir."""
+    if not wind_force or wind_force <= 0:
+        return resultant_force
+    return math.hypot(resultant_force, wind_force)
 
 
 def recommend_pole_type(force, capacity_table, safety_factor):
