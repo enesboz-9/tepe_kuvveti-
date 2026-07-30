@@ -38,11 +38,11 @@ CABLE_SPEC_RE = re.compile(r"^\s*(\d+)?\s*[xX]?\s*\d+\s*/\s*\d+\s*\+?\s*\d*\s*_?
 CONDUCTOR_COUNT_RE = re.compile(r"^\s*(\d+)\s*[xX]")
 NUMBER_ONLY_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
-# Direk ADI: "A01", "A02", "T25" gibi -- bir harf/harf grubu + rakam(lar).
-POLE_ID_RE = re.compile(r"^[A-Za-zÇĞİÖŞÜçğıöşü]{1,3}\d{1,4}$")
-
 # Direk TİPİ: "G-12I", "G-K1", "G-12I(P)", "G-K1''", "9-O" gibi -- iki parça
 # arasında tire olan, harf/rakam/parantez/kesme işareti içerebilen kodlar.
+# NOT: Direk ADI (örn. "A01") artık ayrıca tespit edilmiyor; sadece direk
+# tipi etiketleri kullanılıyor, çünkü bu etiketler çizimde direğe bağlı
+# hatların üzerinde/yakınında yer alıyor (bkz. build_poles()).
 POLE_TYPE_RE = re.compile(r"^[A-Za-z0-9]+-[A-Za-z0-9()'\"]+$")
 
 # --------------------------------------------------------------------------
@@ -318,7 +318,7 @@ def midpoint(a, b):
 
 def classify_text(txt):
     """DXF'ten okunan bir metni şu kategorilerden birine ayırır:
-    'span_length', 'cable_spec', 'pole_id', 'pole_type', veya hiçbiriyle
+    'span_length', 'cable_spec', 'pole_type', veya hiçbiriyle
     eşleşmiyorsa 'ignore' (örn. antet/başlık yazıları "HAR.MÜH", "ÖLÇEK: 1/"
     gibi paftadaki alakasız metinler -- bunlar hiçbir direğe/hatta atanmaz)."""
     t = txt.strip()
@@ -328,8 +328,6 @@ def classify_text(txt):
         return "cable_spec"
     if parse_cable_composition(t) is not None:
         return "cable_spec"
-    if POLE_ID_RE.match(t):
-        return "pole_id"
     if POLE_TYPE_RE.match(t):
         return "pole_type"
     return "ignore"
@@ -390,15 +388,14 @@ class PoleSegmentRef:
 class Pole:
     pole_id: str
     coord: tuple
-    detected_id: str = ""      # paftadaki gerçek direk adı, örn. "A01", "T25"
     detected_type: str = ""    # paftadaki direk tipi etiketi, örn. "G-12I(P)"
     segments: list = field(default_factory=list)  # PoleSegmentRef
 
     @property
     def detected_name(self):
-        """Geriye dönük uyumluluk: eski kod detected_name kullanıyorsa,
-        varsa direk adını, yoksa direk tipini döndürür."""
-        return self.detected_id or self.detected_type
+        """Geriye dönük uyumluluk: eski kod detected_name kullanıyorsa
+        direk tipini döndürür (direk adı artık ayrıca tespit edilmiyor)."""
+        return self.detected_type
 
 
 def point_segment_distance(p, a, b):
@@ -416,7 +413,37 @@ def point_segment_distance(p, a, b):
     return dist(p, (cx, cy))
 
 
+def distance_if_near_pole_end(text_pos, pole_coord, other_point):
+    """Bir direk tipi metninin (örn. "G-K1", "G-12I"), pole_coord'dan
+    other_point'e giden hattın **pole_coord'a yakın yarısında** olup
+    olmadığını kontrol eder ve öyleyse dik mesafesini döner.
+
+    Çizim kuralında direk tipi etiketleri, o direğe bağlı hatların üzerinde,
+    direğe yakın kısımda yazılır (kablo tipi etiketi gibi ama direğin
+    kendisini tanımlar). Metin, hattın orta noktasını geçip diğer direğe
+    yakın tarafta kalıyorsa (t > 0.5), bu etiket muhtemelen diğer direğe
+    aittir ve None döndürülür -- aksi halde iki direk de aynı hat üzerindeki
+    metni kendine mal edebilir."""
+    ax, ay = pole_coord
+    bx, by = other_point
+    px, py = text_pos
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return dist(text_pos, pole_coord)
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    if t > 0.5:
+        return None
+    t_clamped = max(0.0, t)
+    cx, cy = ax + t_clamped * dx, ay + t_clamped * dy
+    return dist(text_pos, (cx, cy))
+
+
 def build_poles(segments, texts, name_match_dist, spec_match_dist):
+    """Segment (hat) listesinden ve metinlerden Pole nesneleri oluşturur.
+
+    name_match_dist: direk TİPİ metinlerinin (örn. "G-K1", "G-12I"), o
+    direğe bağlı hatlara olan dik mesafe eşiği. Direk adı artık ayrıca
+    tespit edilmiyor -- bkz. Pole.detected_type."""
     # 1) tüm segment uç noktalarını topla ve kümele (aynı fiziksel direk)
     all_points = []
     for s in segments:
@@ -445,7 +472,6 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
     # metinleri regex ile kategorize et; "ignore" kategorisine düşenler
     # (antet/başlık yazıları vb.) hiçbir eşleştirmeye dahil edilmez.
     spec_texts = [t for t in texts if classify_text(t["text"]) == "cable_spec"]
-    id_texts = [t for t in texts if classify_text(t["text"]) == "pole_id"]
     type_texts = [t for t in texts if classify_text(t["text"]) == "pole_type"]
 
     # 2) her segmente en yakın kablo tipi metnini ata -- çizgiye olan dik
@@ -473,21 +499,26 @@ def build_poles(segments, texts, name_match_dist, spec_match_dist):
                                                    cable_spec=cable_spec,
                                                    conductor_count=cc))
 
-    # 3) her direğe, kendi koordinatına (1-2 metre tolerans mertebesinde)
-    # en yakın direk ADI ve direk TİPİ metnini ayrı ayrı ata
+    # 3) her direğe direk TİPİ metnini ata (örn. "G-K1", "G-12I"). Bu
+    # etiketler direğin kendi koordinatında değil, o direğe bağlı hatların
+    # üzerinde/yakınında yazılır -- bu yüzden kablo tipi eşleştirmesiyle
+    # aynı mantıkla, direğin her bir segmentine olan dik mesafeye bakılır.
+    # distance_if_near_pole_end() metnin hattın DİĞER direğe yakın tarafında
+    # kalmasını (t > 0.5) eleyerek, aynı hattın iki ucundaki direklerin
+    # birbirinin etiketini çalmasını engeller. Ayrıca, bazı çizimlerde
+    # etiket doğrudan direk noktasının üzerine/çok yakınına yazıldığı için,
+    # doğrudan nokta mesafesi de yedek (fallback) olarak denenir.
     for p in poles.values():
-        best_id, best_id_d = None, None
-        for t in id_texts:
-            d = dist(p.coord, t["pos"])
-            if d <= name_match_dist and (best_id_d is None or d < best_id_d):
-                best_id, best_id_d = t["text"], d
-        p.detected_id = best_id if best_id else ""
-
         best_type, best_type_d = None, None
         for t in type_texts:
-            d = dist(p.coord, t["pos"])
-            if d <= name_match_dist and (best_type_d is None or d < best_type_d):
-                best_type, best_type_d = t["text"], d
+            for seg in p.segments:
+                d = distance_if_near_pole_end(t["pos"], p.coord, seg.other_point)
+                if d is not None and d <= name_match_dist and (best_type_d is None or d < best_type_d):
+                    best_type, best_type_d = t["text"], d
+            # yedek: doğrudan direk koordinatına olan mesafe
+            d_point = dist(p.coord, t["pos"])
+            if d_point <= name_match_dist and (best_type_d is None or d_point < best_type_d):
+                best_type, best_type_d = t["text"], d_point
         p.detected_type = best_type if best_type else ""
 
     return list(poles.values())
