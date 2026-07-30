@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Direk Tepe Kuvveti Analiz Programı
------------------------------------
+pole_core.py
+------------
+Direk Tepe Kuvveti Analiz Programı - çekirdek mantık modülü.
+
 AutoCAD (DXF) projesinden direk noktalarını ve bu direklere bağlı kablo
 hatlarını okur, her direk için tepe kuvvetini (bileşke kuvvet) hesaplar
 ve mevcut direk yerine 9 Ağaç / 10I / 12I / K Tipi direklerden en uygun
-(yeterli ve en düşük kapasiteli) olanı önerir. Sonuçlar Excel olarak
-indirilebilir.
+(yeterli ve en düşük kapasiteli) olanı önerir.
+
+Bu dosya `pole_force_app.py` (Streamlit arayüzü) tarafından import edilir
+ve onunla **aynı klasörde** bulunmalıdır.
 
 ÖNEMLİ NOT: Buradaki tepe kuvveti hesabı basitleştirilmiş bir modeldir
 (her hat için düz çekme kuvveti varsayılıp direk üzerindeki tüm hatların
@@ -17,8 +21,10 @@ tarama aracıdır, tek başına nihai karar kaynağı olarak kullanılmamalıdı
 """
 
 import io
+import os
 import re
 import math
+import tempfile
 from dataclasses import dataclass, field
 
 try:
@@ -32,15 +38,124 @@ CABLE_SPEC_RE = re.compile(r"^\s*(\d+)?\s*[xX]?\s*\d+\s*/\s*\d+\s*\+?\s*\d*\s*[A
 CONDUCTOR_COUNT_RE = re.compile(r"^\s*(\d+)\s*[xX]")
 NUMBER_ONLY_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
+# --------------------------------------------------------------------------
+# Kablo / direk etiketi kısaltma sözlükleri
+# --------------------------------------------------------------------------
+# Çizimlerde kablo hattı etiketi olarak kullanılan harf kodları. Örn: "3xR"
+# -> 3 iletkenli Rose tipi kablo, "SW" -> Swallow tipi kablo (1 iletken).
+CABLE_LETTER_CODE_MAP = {
+    "R": "Rose",
+    "P": "Pansy",
+    "SW": "Swallow",
+    "AER": "Alpek",
+}
+
+# Çizimlerde direk etiketi olarak kullanılan, doğrudan bilinen kodlar.
+# Örn: "GK1" -> müşterek (uzun) K1 tipi direk.
+POLE_TAG_CODE_MAP = {
+    "GK1": "Müşterek (Uzun) K1 Tipi Direk",
+}
+
+# "4P+R", "2P+2R" gibi izolatör/ekipman donanımı etiketlerini çözmek için:
+# <sayı(opsiyonel)><harf kodu> [+ <sayı(opsiyonel)><harf kodu>]...
+POLE_EQUIPMENT_PART_RE = re.compile(r"^\s*(\d*)\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)\s*$")
+
+
+def parse_cable_letter_code(text):
+    """"3xR", "SW", "AER", "P" gibi harf kodu tabanlı kablo etiketlerini
+    çözer. Eşleşirse (iletken_sayısı, kod, tam_ad) döndürür, yoksa None."""
+    t = text.strip()
+    m = re.match(r"^(\d+)\s*[xX]\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)$", t)
+    if m:
+        count = int(m.group(1))
+        code = m.group(2).upper()
+    else:
+        m2 = re.match(r"^([A-Za-zÇĞİÖŞÜçğıöşü]+)$", t)
+        if not m2:
+            return None
+        count = 1
+        code = m2.group(1).upper()
+    if code in CABLE_LETTER_CODE_MAP:
+        return count, code, CABLE_LETTER_CODE_MAP[code]
+    return None
+
+
+def format_cable_label(text):
+    """Bir kablo etiketini (mümkünse) okunabilir hale çevirir.
+    Örn: "3xR" -> "3xR (3x Rose)". Tanınmıyorsa metni olduğu gibi döndürür."""
+    parsed = parse_cable_letter_code(text)
+    if parsed:
+        count, code, full_name = parsed
+        return f"{text.strip()} ({count}x {full_name})"
+    return text
+
+
+def parse_pole_equipment_tag(text):
+    """Direk üzerindeki izolatör/donanım ya da direk tipi etiketini
+    okunabilir bir açıklamaya çevirir.
+
+    - Doğrudan bilinen direk tipi kodları (örn. "GK1") sözlükten çözülür.
+    - "4P+R", "2P+2R" gibi <sayı><harf>+<sayı><harf> desenleri, harf
+      kodları CABLE_LETTER_CODE_MAP'te tanınıyorsa "4x Pansy + 1x Rose
+      izolatör" şeklinde açılır.
+
+    Çözülemezse None döner.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    upper_t = t.upper()
+
+    if upper_t in POLE_TAG_CODE_MAP:
+        return POLE_TAG_CODE_MAP[upper_t]
+
+    parts = t.split("+")
+    if len(parts) < 1:
+        return None
+
+    descriptions = []
+    for part in parts:
+        m = POLE_EQUIPMENT_PART_RE.match(part)
+        if not m:
+            return None
+        count_str, code = m.group(1), m.group(2).upper()
+        if code not in CABLE_LETTER_CODE_MAP:
+            return None
+        count = int(count_str) if count_str else 1
+        descriptions.append(f"{count}x {CABLE_LETTER_CODE_MAP[code]}")
+
+    if not descriptions:
+        return None
+    return " + ".join(descriptions) + " izolatör"
+
 
 # --------------------------------------------------------------------------
 # DXF okuma yardımcıları
 # --------------------------------------------------------------------------
 
 def load_dxf(file_bytes):
-    stream = io.StringIO(file_bytes.read().decode("utf-8", errors="ignore"))
-    doc = ezdxf.read(stream)
-    return doc
+    """Yüklenen dosyayı geçici bir dosyaya yazıp ezdxf.readfile() ile okur.
+    Bu yöntem hem ASCII hem de BINARY DXF dosyalarını, ve dosyanın kendi
+    içindeki (Türkçe karakterler için) codepage bilgisini doğru şekilde
+    algılayarak okur -- doğrudan UTF-8 metin olarak okumaya çalışmak
+    binary DXF'lerde veya farklı codepage'lerde hataya yol açar."""
+    raw = file_bytes.read()
+    with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        try:
+            doc = ezdxf.readfile(tmp_path)
+        except ezdxf.DXFStructureError:
+            # bazı dosyalar bozuk/eksik yapıya sahip olabilir; recover modülüyle dene
+            from ezdxf import recover
+            doc, auditor = recover.readfile(tmp_path)
+        return doc
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def get_entity_color_layer(entity):
@@ -131,6 +246,8 @@ def classify_text(txt):
         return "span_length"
     if CABLE_SPEC_RE.match(t) and "/" in t:
         return "cable_spec"
+    if parse_cable_letter_code(t) is not None:
+        return "cable_spec"
     return "pole_name"
 
 
@@ -138,6 +255,9 @@ def parse_conductor_count(spec_text):
     m = CONDUCTOR_COUNT_RE.match(spec_text)
     if m:
         return int(m.group(1))
+    letter_code = parse_cable_letter_code(spec_text)
+    if letter_code:
+        return letter_code[0]
     return 1
 
 
