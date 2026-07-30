@@ -205,12 +205,21 @@ st.write(
     "(kgf) girin. İletken sayısı, metindeki '3x...' veya 'R/P/SW/AER' gibi "
     "kısaltmalardan otomatik okunmuştur, gerekirse düzeltebilirsiniz."
 )
+st.caption(
+    "**Rüzgar/Buz Yük Katsayısı:** Tekil iletken çekme kuvvetine uygulanan bir "
+    "çarpandır; TEDAŞ şartnamesindeki rüzgar/buz yükü etkisini kaba bir "
+    "yaklaşımla yansıtmak için kullanılabilir (varsayılan 1.0 = etkisiz). "
+    "Bu hâlâ basitleştirilmiş bir model olduğundan, gerçek rüzgar/buz yükü "
+    "hesabı (iletken çapı, buz kalınlığı, açıklık uzunluğuna bağlı) için "
+    "ilgili mühendis onayı gereklidir."
+)
 cable_rows = []
 for spec in found_specs:
     cable_rows.append({
         "Kablo Tipi (Metin)": spec,
         "İletken Sayısı": parse_conductor_count(spec),
         "Tekil İletken Çekme Kuvveti (kgf)": 500.0,
+        "Rüzgar/Buz Yük Katsayısı": 1.0,
     })
 cable_param_df = pd.DataFrame(cable_rows)
 edited_cables = st.data_editor(
@@ -246,6 +255,10 @@ if calc_clicked:
         edited_cables["Kablo Tipi (Metin)"],
         edited_cables["Tekil İletken Çekme Kuvveti (kgf)"]
     ))
+    load_factor_lookup = dict(zip(
+        edited_cables["Kablo Tipi (Metin)"],
+        edited_cables["Rüzgar/Buz Yük Katsayısı"]
+    ))
     capacity_lookup = dict(zip(
         edited_capacity["Direk Tipi"],
         edited_capacity["Tepe Kuvveti Kapasitesi (kgf)"]
@@ -267,7 +280,7 @@ if calc_clicked:
         for seg in p.segments:
             seg.conductor_count = int(cc_override.get(seg.cable_spec, seg.conductor_count))
 
-        force, _details = compute_resultant_force(p, tension_lookup)
+        force, _details = compute_resultant_force(p, tension_lookup, load_factor_lookup)
         rec_type, rec_capacity = recommend_pole_type(force, capacity_lookup, safety_factor)
         current_type = current_type_lookup.get(p.pole_id, "Bilinmiyor")
 
