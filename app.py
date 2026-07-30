@@ -125,8 +125,12 @@ with c1:
     )
 with c2:
     name_match_dist = st.number_input(
-        "Direk adı metni eşleştirme mesafesi (çizim birimi)",
-        min_value=0.01, value=8.0, step=0.5
+        "Direk adı/tipi metni eşleştirme mesafesi (çizim birimi)",
+        min_value=0.01, value=6.0, step=0.5,
+        help="Direk merkezine bu mesafeden yakın 'A01' tarzı direk adı ve "
+             "'G-12I' tarzı direk tipi metinleri o direğe atanır. Paftanızın "
+             "ölçek biriminize göre ayarlayın (UTM/metre tabanlı paftalarda "
+             "5-8 birim genelde yeterlidir)."
     )
 
 parse_clicked = st.button("📐 Direkleri Tespit Et", type="primary")
@@ -172,7 +176,8 @@ for p in poles:
     specs_here = sorted({s.cable_spec for s in p.segments})
     pole_rows.append({
         "Direk ID": p.pole_id,
-        "Direk Adı": p.detected_name if p.detected_name else p.pole_id,
+        "Direk Adı": p.detected_id if p.detected_id else p.pole_id,
+        "Direk Tipi (Paftadan)": p.detected_type,
         "X": round(p.coord[0], 2),
         "Y": round(p.coord[1], 2),
         "Bağlı Hat Sayısı": len(p.segments),
@@ -185,7 +190,7 @@ edited_poles = st.data_editor(
     pole_edit_df,
     use_container_width=True,
     hide_index=True,
-    disabled=["Direk ID", "X", "Y", "Bağlı Hat Sayısı", "Kablo Tipleri"],
+    disabled=["Direk ID", "Direk Tipi (Paftadan)", "X", "Y", "Bağlı Hat Sayısı", "Kablo Tipleri"],
     column_config={
         "Mevcut Direk Tipi": st.column_config.SelectboxColumn(
             options=["Bilinmiyor"] + POLE_TYPES_DEFAULT
@@ -249,6 +254,9 @@ if calc_clicked:
         edited_poles["Direk ID"], edited_poles["Mevcut Direk Tipi"]
     ))
     name_lookup = dict(zip(edited_poles["Direk ID"], edited_poles["Direk Adı"]))
+    type_text_lookup = dict(zip(
+        edited_poles["Direk ID"], edited_poles["Direk Tipi (Paftadan)"]
+    ))
 
     result_rows = []
     for p in poles:
@@ -275,7 +283,8 @@ if calc_clicked:
                 needs_change = "Evet"
 
         direk_adi = name_lookup.get(p.pole_id, p.pole_id)
-        etiket_yorumu = parse_pole_equipment_tag(direk_adi) or ""
+        direk_tipi_metni = type_text_lookup.get(p.pole_id, "")
+        etiket_yorumu = parse_pole_equipment_tag(direk_tipi_metni) or ""
         kablo_tipleri_yorumlu = ", ".join(
             format_cable_label(s) for s in sorted({s.cable_spec for s in p.segments})
         )
@@ -283,6 +292,7 @@ if calc_clicked:
         result_rows.append({
             "Direk ID": p.pole_id,
             "Direk Adı": direk_adi,
+            "Direk Tipi (Paftadan)": direk_tipi_metni,
             "Direk Etiketi Yorumu": etiket_yorumu,
             "X": round(p.coord[0], 2),
             "Y": round(p.coord[1], 2),
