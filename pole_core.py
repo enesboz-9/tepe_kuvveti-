@@ -34,7 +34,7 @@ except ImportError:
 
 POLE_TYPES_DEFAULT = ["9 Ağaç", "10I", "12I", "K Tipi"]
 
-CABLE_SPEC_RE = re.compile(r"^\s*(\d+)?\s*[xX]?\s*\d+\s*/\s*\d+\s*\+?\s*\d*\s*[A-Za-zÇĞİÖŞÜçğıöşü]*\s*$")
+CABLE_SPEC_RE = re.compile(r"^\s*(\d+)?\s*[xX]?\s*\d+\s*/\s*\d+\s*\+?\s*\d*\s*_?\s*[A-Za-zÇĞİÖŞÜçğıöşü]*\s*$")
 CONDUCTOR_COUNT_RE = re.compile(r"^\s*(\d+)\s*[xX]")
 NUMBER_ONLY_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
@@ -61,32 +61,66 @@ POLE_TAG_CODE_MAP = {
 POLE_EQUIPMENT_PART_RE = re.compile(r"^\s*(\d*)\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)\s*$")
 
 
-def parse_cable_letter_code(text):
-    """"3xR", "SW", "AER", "P" gibi harf kodu tabanlı kablo etiketlerini
-    çözer. Eşleşirse (iletken_sayısı, kod, tam_ad) döndürür, yoksa None."""
+def _strip_cable_brackets(text):
+    """Kablo etiketlerinin başında/sonunda görülen "(...)" (mevcut hat) ya da
+    "[...]" (BYSK hat) işaretlerini temizler. Örn: "(5xR)" -> "5xR",
+    "[3xR]" -> "3xR"."""
     t = text.strip()
-    m = re.match(r"^(\d+)\s*[xX]\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)$", t)
-    if m:
-        count = int(m.group(1))
-        code = m.group(2).upper()
-    else:
-        m2 = re.match(r"^([A-Za-zÇĞİÖŞÜçğıöşü]+)$", t)
-        if not m2:
+    if len(t) >= 2 and t[0] in "([" and t[-1] in ")]":
+        return t[1:-1].strip()
+    return t
+
+
+def parse_cable_composition(text):
+    """Kablo tipi etiketini çözer. Aşağıdaki tüm biçimleri destekler:
+    - "3xR", "SW", "P", "AER"      -> tekil harf kodu
+    - "(5xR)", "[3xR]", "(3xSW)"   -> parantez/köşeli parantez içinde (mevcut/BYSK hat)
+    - "4P+R", "2P+2R"              -> birleşik harf kodu (birden fazla iletken tipi bir arada)
+
+    Eşleşirse (toplam_iletken_sayısı, okunabilir_açıklama) döner, yoksa None."""
+    t = _strip_cable_brackets(text)
+    if not t:
+        return None
+
+    parts = t.split("+")
+    descriptions = []
+    total = 0
+    for part in parts:
+        part = part.strip()
+        m = re.match(r"^(\d+)\s*[xX]\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)$", part)
+        if m:
+            count = int(m.group(1))
+            code = m.group(2).upper()
+        else:
+            m2 = re.match(r"^(\d*)\s*([A-Za-zÇĞİÖŞÜçğıöşü]+)$", part)
+            if not m2 or not m2.group(2):
+                return None
+            count = int(m2.group(1)) if m2.group(1) else 1
+            code = m2.group(2).upper()
+        if code not in CABLE_LETTER_CODE_MAP:
             return None
-        count = 1
-        code = m2.group(1).upper()
-    if code in CABLE_LETTER_CODE_MAP:
-        return count, code, CABLE_LETTER_CODE_MAP[code]
-    return None
+        total += count
+        descriptions.append(f"{count}x {CABLE_LETTER_CODE_MAP[code]}")
+
+    if not descriptions:
+        return None
+    return total, " + ".join(descriptions)
+
+
+def parse_cable_letter_code(text):
+    """Geriye dönük uyumluluk için: (iletken_sayısı, açıklama) döner ya da None.
+    Yeni kod parse_cable_composition() kullanmalı."""
+    return parse_cable_composition(text)
 
 
 def format_cable_label(text):
     """Bir kablo etiketini (mümkünse) okunabilir hale çevirir.
-    Örn: "3xR" -> "3xR (3x Rose)". Tanınmıyorsa metni olduğu gibi döndürür."""
-    parsed = parse_cable_letter_code(text)
+    Örn: "3xR" -> "3xR (3x Rose)", "(5xR)" -> "(5xR) (5x Rose)",
+    "4P+R" -> "4P+R (4x Pansy + 1x Rose)". Tanınmıyorsa metni olduğu gibi döndürür."""
+    parsed = parse_cable_composition(text)
     if parsed:
-        count, code, full_name = parsed
-        return f"{text.strip()} ({count}x {full_name})"
+        _total, desc = parsed
+        return f"{text.strip()} ({desc})"
     return text
 
 
@@ -109,24 +143,11 @@ def parse_pole_equipment_tag(text):
     if upper_t in POLE_TAG_CODE_MAP:
         return POLE_TAG_CODE_MAP[upper_t]
 
-    parts = t.split("+")
-    if len(parts) < 1:
-        return None
-
-    descriptions = []
-    for part in parts:
-        m = POLE_EQUIPMENT_PART_RE.match(part)
-        if not m:
-            return None
-        count_str, code = m.group(1), m.group(2).upper()
-        if code not in CABLE_LETTER_CODE_MAP:
-            return None
-        count = int(count_str) if count_str else 1
-        descriptions.append(f"{count}x {CABLE_LETTER_CODE_MAP[code]}")
-
-    if not descriptions:
-        return None
-    return " + ".join(descriptions) + " izolatör"
+    parsed = parse_cable_composition(t)
+    if parsed:
+        _total, desc = parsed
+        return desc + " izolatör"
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -168,8 +189,13 @@ def get_entity_color_layer(entity):
 
 
 def extract_polylines(doc, layers):
-    """Modelspace'teki LWPOLYLINE / POLYLINE varlıklarını, verilen katmanlarla
-    sınırlı olacak şekilde, ardışık nokta çiftleri (segment) listesi olarak döndürür."""
+    """Modelspace'teki LWPOLYLINE / POLYLINE / LINE varlıklarını, verilen
+    katmanlarla sınırlı olacak şekilde, ardışık nokta çiftleri (segment)
+    listesi olarak döndürür.
+
+    NOT: Kablo hatları çizimde çoğunlukla düz LINE varlığı olarak çizilir
+    (polyline değil) -- bu yüzden LINE varlıkları da mutlaka okunmalıdır,
+    aksi halde hiçbir direğe kablo bağlanamaz ve hesaplama yapılamaz."""
     msp = doc.modelspace()
     segments = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
@@ -190,6 +216,21 @@ def extract_polylines(doc, layers):
                 "layer": layer,
                 "source": e,
             })
+    for e in msp.query("LINE"):
+        layer, _ = get_entity_color_layer(e)
+        if layers and layer not in layers:
+            continue
+        try:
+            p1 = (e.dxf.start.x, e.dxf.start.y)
+            p2 = (e.dxf.end.x, e.dxf.end.y)
+        except Exception:
+            continue
+        segments.append({
+            "p1": p1,
+            "p2": p2,
+            "layer": layer,
+            "source": e,
+        })
     return segments
 
 
@@ -217,7 +258,7 @@ def extract_texts(doc, layers):
 def list_layers(doc):
     layers = {}
     msp = doc.modelspace()
-    for e in msp.query("LWPOLYLINE POLYLINE"):
+    for e in msp.query("LWPOLYLINE POLYLINE LINE"):
         l, _ = get_entity_color_layer(e)
         layers.setdefault(l, {"poly": 0, "text": 0})
         layers[l]["poly"] += 1
