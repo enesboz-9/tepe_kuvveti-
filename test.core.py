@@ -20,6 +20,9 @@ from pole_core import (
     cluster_vertices,
     compute_resultant_force,
     compute_angle_between_segments,
+    compute_deviation_angle,
+    compute_total_force_with_wind,
+    normalize_pole_type_text,
     recommend_pole_type,
     Pole,
     PoleSegmentRef,
@@ -87,11 +90,18 @@ def test_classify_text_span_length():
     assert classify_text("42.5") == "span_length"
 
 
-def test_classify_text_plain_pole_name_now_ignored():
-    # Direk ADI tespiti kaldırıldı: "A01", "T25" gibi düz isim/rakam
-    # metinleri artık hiçbir kategoriye (özellikle pole_type'a) düşmemeli.
-    assert classify_text("A01") == "ignore"
-    assert classify_text("T25") == "ignore"
+def test_classify_text_pole_name():
+    # Direk ADI etiketleri ("B04", "A01", "T25" gibi -- tiresiz, harf+rakam)
+    # artık "pole_name" kategorisine düşmeli, pole_type ile karışmamalı.
+    assert classify_text("B04") == "pole_name"
+    assert classify_text("A01") == "pole_name"
+    assert classify_text("T25") == "pole_name"
+
+
+def test_classify_text_known_pole_tag_code_is_pole_type_not_name():
+    # "GK1" harf+rakam desenine uysa da POLE_TAG_CODE_MAP'te bilinen bir
+    # direk tipi kodu olduğu için pole_name değil pole_type sayılmalı.
+    assert classify_text("GK1") == "pole_type"
 
 
 def test_classify_text_pole_type():
@@ -281,15 +291,28 @@ def test_build_poles_assigns_type_text_to_far_end_when_close_to_it():
     assert near.detected_type == ""
 
 
-def test_build_poles_no_pole_name_detected():
-    # Direk adı (örn. "A01") artık ayrıca tespit edilmiyor; sadece
-    # detected_type dolduruluyor.
+def test_build_poles_detects_pole_name_near_vertex():
+    # Ekran görüntüsündeki B04 örneğine benzer: direk adı ("B04") direğin
+    # kendi koordinatına çok yakın yazılır (hat üzerinde değil) ve o direğe
+    # atanmalı.
     segments = [{"p1": (0, 0), "p2": (100, 0), "layer": "L", "source": None}]
-    texts = [{"text": "A01", "pos": (0, 0.5), "layer": "L"}]
+    texts = [{"text": "B04", "pos": (0, 0.5), "layer": "L"}]
     poles = build_poles(segments, texts, name_match_dist=6.0, spec_match_dist=3.0)
+    poles = [p for p in poles if len(p.segments) > 0 or dist(p.coord, (0, 0)) < 1]
+    near = min(poles, key=lambda p: dist(p.coord, (0, 0)))
+    far = min(poles, key=lambda p: dist(p.coord, (100, 0)))
+    assert near.detected_name == "B04"
+    assert far.detected_name == ""  # etiket karşı direğe sızmamalı
+
+
+def test_build_poles_assigns_span_length_to_segments():
+    # "25.0" gibi bir menzil metni, segmentin her iki ucuna da atanmalı.
+    segments = [{"p1": (0, 0), "p2": (100, 0), "layer": "L", "source": None}]
+    texts = [{"text": "25.0", "pos": (50, 1), "layer": "L"}]
+    poles = build_poles(segments, texts, name_match_dist=6.0, spec_match_dist=3.0)
+    poles = [p for p in poles if len(p.segments) > 0]
     for p in poles:
-        assert not hasattr(p, "detected_id")
-        assert p.detected_type == ""  # "A01" pole_type olarak sınıflanmıyor
+        assert p.segments[0].span_length == pytest.approx(25.0)
 
 
 
@@ -386,6 +409,29 @@ def test_compute_angle_between_segments_128_degrees():
     assert angle == pytest.approx(128.0, abs=0.1)
 
 
+def test_compute_deviation_angle_matches_128_example():
+    # Görseldeki B04 örneği: α=128° -> β = 180-128 = 52°
+    import math as _math
+    pole = Pole(pole_id="B04", coord=(0, 0))
+    a1 = _math.radians(0)
+    a2 = _math.radians(128)
+    pole.segments = [
+        PoleSegmentRef(other_point=(_math.cos(a1) * 25, _math.sin(a1) * 25),
+                        cable_spec="3x35/16+50_AER", conductor_count=3),
+        PoleSegmentRef(other_point=(_math.cos(a2) * 26, _math.sin(a2) * 26),
+                        cable_spec="3x16/16+25_AER", conductor_count=3),
+    ]
+    assert compute_deviation_angle(pole) == pytest.approx(52.0, abs=0.1)
+
+
+def test_compute_deviation_angle_none_for_wrong_segment_count():
+    pole = Pole(pole_id="P1", coord=(0, 0))
+    pole.segments = [
+        PoleSegmentRef(other_point=(10, 0), cable_spec="R", conductor_count=1),
+    ]
+    assert compute_deviation_angle(pole) is None
+
+
 def test_compute_angle_between_segments_none_for_wrong_segment_count():
     pole = Pole(pole_id="P1", coord=(0, 0))
     pole.segments = [
@@ -396,6 +442,38 @@ def test_compute_angle_between_segments_none_for_wrong_segment_count():
     pole.segments.append(PoleSegmentRef(other_point=(0, 10), cable_spec="R", conductor_count=1))
     pole.segments.append(PoleSegmentRef(other_point=(-10, 0), cable_spec="R", conductor_count=1))
     assert compute_angle_between_segments(pole) is None  # 3 hat -> None
+
+
+# --------------------------------------------------------------------------
+# P_toplam = sqrt(P_R^2 + P_w^2) testleri
+# --------------------------------------------------------------------------
+
+def test_compute_total_force_with_wind_zero_wind_returns_same_value():
+    assert compute_total_force_with_wind(1000.0, 0.0) == pytest.approx(1000.0)
+    assert compute_total_force_with_wind(1000.0, None) == pytest.approx(1000.0)
+
+
+def test_compute_total_force_with_wind_combines_perpendicular():
+    # P_R=300, P_w=400 -> P_toplam = sqrt(300^2+400^2) = 500 (3-4-5 üçgeni)
+    assert compute_total_force_with_wind(300.0, 400.0) == pytest.approx(500.0)
+
+
+# --------------------------------------------------------------------------
+# normalize_pole_type_text testleri
+# --------------------------------------------------------------------------
+
+def test_normalize_pole_type_text_maps_known_codes():
+    assert normalize_pole_type_text("G-12I") == "12I"
+    assert normalize_pole_type_text("G-12I(P)") == "12I"
+    assert normalize_pole_type_text("G-10I") == "10I"
+    assert normalize_pole_type_text("G-K1") == "K Tipi"
+    assert normalize_pole_type_text("9-O") == "9 Ağaç"
+
+
+def test_normalize_pole_type_text_unknown_returns_none():
+    assert normalize_pole_type_text("XYZ") is None
+    assert normalize_pole_type_text("") is None
+    assert normalize_pole_type_text(None) is None
 
 
 if __name__ == "__main__":
